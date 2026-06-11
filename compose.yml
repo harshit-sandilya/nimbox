@@ -1,0 +1,19 @@
+services:
+  nimbox:
+    build: .
+    container_name: nimbox-dev
+
+    volumes:
+      - .:/workspace
+      - nimbox_data:/root/.nimbox
+
+    ports:
+      - "11434:11434"
+
+    stdin_open: true
+    tty: true
+
+    command: /bin/bash
+
+volumes:
+  nimbox_data:

@@ -1,0 +1,10 @@
+pub mod add;
+pub mod embed;
+pub mod info;
+pub mod list;
+pub mod model;
+pub mod provider;
+pub mod remove;
+pub mod start;
+pub mod stop;
+pub mod update;
