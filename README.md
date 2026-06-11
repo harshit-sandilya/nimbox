@@ -40,16 +40,24 @@ This will:
 
 ## 🔑 NVIDIA API Key
 
-Nimbox uses NVIDIA NIM as its backend.
+Nimbox uses NVIDIA NIM as its backend. And supports open-router too.
 
 Get your API key from:
 
 [https://build.nvidia.com/](https://build.nvidia.com/)
+or
+[https://openrouter.ai/](https://openrouter.ai/)
 
 Then add it:
 
 ```bash
 nimbox add -n default YOUR_API_KEY
+```
+
+If openrouter, use:
+
+```bash
+nimbox provider openrouter
 ```
 
 ---

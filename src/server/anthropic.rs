@@ -56,17 +56,14 @@ pub async fn messages(
             Err(err) => {
                 return Json(json!({
                     "type": "error",
-                    "error": {
-                        "type": "api_error",
-                        "message": err.to_string()
-                    }
+                    "error": {"type": "api_error", "message": err.to_string()}
                 }))
                 .into_response();
             }
         };
 
-        // Anthropic SSE: prepend message_start, then map deltas, then message_stop
         let msg_id = format!("msg_{}", now_ms());
+
         let start_event = futures_util::stream::once(async move {
             Ok::<Event, axum::Error>(
                 Event::default().event("message_start").data(
@@ -88,7 +85,6 @@ pub async fn messages(
             )
         });
 
-        // content_block_start for index 0 (text block)
         let block_start = futures_util::stream::once(async {
             Ok::<Event, axum::Error>(
                 Event::default().event("content_block_start").data(
@@ -102,10 +98,31 @@ pub async fn messages(
             )
         });
 
-        let mut tool_index: i64 = -1;
+        let mut tool_index: i64 = 0; // fix: start at 0, first tool increments to 1
         let mapped = stream.filter_map(move |event| {
             let result = anthropic_stream_event(event, &mut tool_index);
             async move { result }
+        });
+
+        let block_stop = futures_util::stream::once(async {
+            Ok::<Event, axum::Error>(
+                Event::default()
+                    .event("content_block_stop")
+                    .data(json!({"type": "content_block_stop", "index": 0}).to_string()),
+            )
+        });
+
+        let message_delta = futures_util::stream::once(async {
+            Ok::<Event, axum::Error>(
+                Event::default().event("message_delta").data(
+                    json!({
+                        "type": "message_delta",
+                        "delta": {"stop_reason": "end_turn", "stop_sequence": null},
+                        "usage": {"output_tokens": 0}
+                    })
+                    .to_string(),
+                ),
+            )
         });
 
         let stop_event = futures_util::stream::once(async {
@@ -119,6 +136,8 @@ pub async fn messages(
         let full_stream = start_event
             .chain(block_start)
             .chain(mapped)
+            .chain(block_stop)
+            .chain(message_delta)
             .chain(stop_event);
 
         return Sse::new(full_stream).into_response();
@@ -326,6 +345,9 @@ fn to_anthropic_response(response: crate::models::chat::ChatResponse) -> Value {
         "usage": response.usage.map(|u| json!({
             "input_tokens": u.prompt_tokens,
             "output_tokens": u.completion_tokens
+        })).unwrap_or(json!({
+            "input_tokens": 0,
+            "output_tokens": 0
         }))
     })
 }
@@ -353,7 +375,7 @@ fn anthropic_stream_event(
 
         StreamEvent::ToolCallStarted { id, name } => {
             *tool_index += 1;
-            let idx = *tool_index + 1; // +1 because index 0 = text block
+            let idx = *tool_index; // +1 because index 0 = text block
             Some(Ok(Event::default().event("content_block_start").data(
                 json!({
                     "type": "content_block_start",
@@ -372,7 +394,7 @@ fn anthropic_stream_event(
         StreamEvent::ToolCallDelta {
             arguments_chunk, ..
         } => {
-            let idx = *tool_index + 1;
+            let idx = *tool_index;
             Some(Ok(Event::default().event("content_block_delta").data(
                 json!({
                     "type": "content_block_delta",
@@ -384,7 +406,7 @@ fn anthropic_stream_event(
         }
 
         StreamEvent::ToolCallFinished { .. } => {
-            let idx = *tool_index + 1;
+            let idx = *tool_index;
             Some(Ok(Event::default().event("content_block_stop").data(
                 json!({
                     "type": "content_block_stop",

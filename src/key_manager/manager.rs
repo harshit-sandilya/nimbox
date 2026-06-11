@@ -32,12 +32,11 @@ impl KeyManager {
         None
     }
 
-    /// Call only on HTTP 429
-    pub fn report_rate_limit(&mut self, key_name: &str) {
+    pub fn report_rate_limit_with_retry(&mut self, key_name: &str, retry_after: Option<u64>) {
         if let Some(key) = self.keys.iter_mut().find(|k| k.name == key_name) {
             key.failures += 1;
-            // Exponential backoff: 60s * 2^(failures-1), cap 1 hour
-            let secs = (60u64 * (1u64 << (key.failures - 1).min(6))).min(3600);
+            let secs = retry_after
+                .unwrap_or_else(|| (60u64 * (1u64 << (key.failures - 1).min(6))).min(3600));
             key.cooldown_until = Some(Instant::now() + Duration::from_secs(secs));
         }
     }

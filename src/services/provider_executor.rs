@@ -15,6 +15,16 @@ fn is_rate_limit(err: &anyhow::Error) -> bool {
         || msg.contains("rate limit")
         || msg.contains("rate_limit")
         || msg.contains("too many requests")
+        || msg.contains("temporarily rate-limited")
+}
+
+fn parse_retry_after(err: &anyhow::Error) -> Option<u64> {
+    let msg = err.to_string();
+    if let Some(pos) = msg.find("retry_after=") {
+        msg[pos + 12..].split_whitespace().next()?.parse().ok()
+    } else {
+        None
+    }
 }
 
 impl ProviderExecutor {
@@ -37,7 +47,7 @@ impl ProviderExecutor {
             }
             Err(err) => {
                 if is_rate_limit(&err) {
-                    km.report_rate_limit(&key_name);
+                    km.report_rate_limit_with_retry(&key_name, parse_retry_after(&err));
                 } else {
                     km.report_error(&key_name);
                 }
@@ -54,7 +64,7 @@ impl ProviderExecutor {
             Err(err) => {
                 let mut km = ctx.key_manager.write().await;
                 if is_rate_limit(&err) {
-                    km.report_rate_limit(&key_name);
+                    km.report_rate_limit_with_retry(&key_name, parse_retry_after(&err));
                 } else {
                     km.report_error(&key_name);
                 }
@@ -74,13 +84,14 @@ impl ProviderExecutor {
                         }
                         Ok(StreamEvent::Error { message }) => {
                             let is_rl = message.to_lowercase().contains("rate limit")
-                                || message.contains("429");
+                                || message.contains("429")
+                                || message.to_lowercase().contains("temporarily rate-limited");
                             let ctx = ctx.clone();
                             let key_name = key_name.clone();
                             tokio::spawn(async move {
                                 let mut km = ctx.key_manager.write().await;
                                 if is_rl {
-                                    km.report_rate_limit(&key_name);
+                                    km.report_rate_limit_with_retry(&key_name, None);
                                 } else {
                                     km.report_error(&key_name);
                                 }
@@ -106,7 +117,7 @@ impl ProviderExecutor {
             }
             Err(err) => {
                 if is_rate_limit(&err) {
-                    km.report_rate_limit(&key_name);
+                    km.report_rate_limit_with_retry(&key_name, parse_retry_after(&err));
                 } else {
                     km.report_error(&key_name);
                 }
