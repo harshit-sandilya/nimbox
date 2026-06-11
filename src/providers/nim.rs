@@ -161,12 +161,10 @@ impl Provider for NimProvider {
         let mut body = serde_json::json!({
             "model": self.get_model(&req)?,
             "messages": self.serialize_messages(&req.messages),
-            "max_tokens": req.max_tokens.unwrap_or(131072),
+            "max_tokens": req.max_tokens.unwrap_or(32768),
             "temperature": req.temperature.unwrap_or(1.0),
             "top_p": req.top_p.unwrap_or(1.0),
             "stream": false,
-            "reasoning_budget": 32768,
-            "chat_template_kwargs": {"enable_thinking": true},
         });
 
         if !req.tools.is_empty() {
@@ -232,12 +230,10 @@ impl Provider for NimProvider {
         let mut body = serde_json::json!({
             "model": self.get_model(&req)?,
             "messages": self.serialize_messages(&req.messages),
-            "max_tokens": req.max_tokens.unwrap_or(131072),
+            "max_tokens": req.max_tokens.unwrap_or(32768),
             "temperature": req.temperature.unwrap_or(1.0),
             "top_p": req.top_p.unwrap_or(1.0),
             "stream": true,
-            "reasoning_budget": 32768,
-            "chat_template_kwargs": {"enable_thinking": true},
         });
         if !req.tools.is_empty() {
             body["tools"] = serde_json::Value::Array(self.serialize_tools(&req.tools));

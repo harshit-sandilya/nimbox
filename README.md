@@ -81,7 +81,7 @@ http://localhost:11434
 ### 2. Set model
 
 ```bash
-nimbox model z-ai/glm-5.1
+nimbox model meta/llama-3.3-70b-instruct
 ```
 
 ---
