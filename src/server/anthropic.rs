@@ -3,6 +3,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use axum::{
     Json,
     extract::State,
+    http::StatusCode,
     response::{
         IntoResponse,
         sse::{Event, Sse},
@@ -25,28 +26,22 @@ pub async fn messages(
     let model = match ctx.store.get("model") {
         Ok(Some(model)) => model,
         _ => {
-            return Json(json!({
-                "type": "error",
-                "error": {
-                    "type": "invalid_request_error",
-                    "message": "No model configured. Run: nimbox model <model-name>"
-                }
-            }))
-            .into_response();
+            return anthropic_error_response(
+                StatusCode::BAD_REQUEST,
+                "invalid_request_error",
+                "No model configured. Run: nimbox model <model-name>",
+            );
         }
     };
 
     let req = match to_internal_request(payload.clone(), model) {
         Ok(req) => req,
         Err(err) => {
-            return Json(json!({
-                "type": "error",
-                "error": {
-                    "type": "invalid_request_error",
-                    "message": err.to_string()
-                }
-            }))
-            .into_response();
+            return anthropic_error_response(
+                StatusCode::BAD_REQUEST,
+                "invalid_request_error",
+                err.to_string(),
+            );
         }
     };
 
@@ -54,11 +49,11 @@ pub async fn messages(
         let stream = match ProviderExecutor::chat_stream(&ctx, req).await {
             Ok(s) => s,
             Err(err) => {
-                return Json(json!({
-                    "type": "error",
-                    "error": {"type": "api_error", "message": err.to_string()}
-                }))
-                .into_response();
+                return anthropic_error_response(
+                    status_from_error(&err),
+                    "api_error",
+                    err.to_string(),
+                );
             }
         };
 
@@ -147,18 +142,44 @@ pub async fn messages(
     let response = match ProviderExecutor::chat(&ctx, req).await {
         Ok(r) => r,
         Err(err) => {
-            return Json(json!({
-                "type": "error",
-                "error": {
-                    "type": "api_error",
-                    "message": err.to_string()
-                }
-            }))
-            .into_response();
+            return anthropic_error_response(status_from_error(&err), "api_error", err.to_string());
         }
     };
 
     Json(to_anthropic_response(response)).into_response()
+}
+
+fn anthropic_error_response(
+    status: StatusCode,
+    error_type: &str,
+    message: impl Into<String>,
+) -> axum::response::Response {
+    (
+        status,
+        Json(json!({
+            "type": "error",
+            "error": {
+                "type": error_type,
+                "message": message.into()
+            }
+        })),
+    )
+        .into_response()
+}
+
+fn status_from_error(err: &anyhow::Error) -> StatusCode {
+    let msg = err.to_string().to_lowercase();
+    if msg.contains("429") || msg.contains("rate limit") || msg.contains("too many requests") {
+        StatusCode::TOO_MANY_REQUESTS
+    } else if msg.contains("401") || msg.contains("unauthorized") {
+        StatusCode::UNAUTHORIZED
+    } else if msg.contains("403") || msg.contains("forbidden") {
+        StatusCode::FORBIDDEN
+    } else if msg.contains("404") || msg.contains("not found") {
+        StatusCode::NOT_FOUND
+    } else {
+        StatusCode::BAD_GATEWAY
+    }
 }
 
 // --- Converters ---
@@ -358,7 +379,15 @@ fn anthropic_stream_event(
 ) -> Option<Result<Event, axum::Error>> {
     let event = match event {
         Ok(e) => e,
-        Err(e) => return Some(Err(axum::Error::new(e))),
+        Err(e) => {
+            return Some(Ok(Event::default().event("error").data(
+                json!({
+                    "type": "error",
+                    "error": {"type": "api_error", "message": e.to_string()}
+                })
+                .to_string(),
+            )));
+        }
     };
 
     match event {

@@ -4,6 +4,7 @@ use anyhow::anyhow;
 use axum::{
     Json,
     extract::State,
+    http::StatusCode,
     response::{
         IntoResponse,
         sse::{Event, Sse},
@@ -27,24 +28,17 @@ pub async fn chat_completions(
     let model = match ctx.store.get("model") {
         Ok(Some(model)) => model,
         _ => {
-            return Json(json!({
-                "error": {
-                    "message": "No model configured. Run: nimbox model <model-name>"
-                }
-            }))
-            .into_response();
+            return openai_error_response(
+                StatusCode::BAD_REQUEST,
+                "No model configured. Run: nimbox model <model-name>",
+            );
         }
     };
 
     let req = match to_internal_chat_request(payload.clone(), model) {
         Ok(req) => req,
         Err(err) => {
-            return Json(json!({
-                "error": {
-                    "message": err.to_string()
-                }
-            }))
-            .into_response();
+            return openai_error_response(StatusCode::BAD_REQUEST, err.to_string());
         }
     };
 
@@ -52,12 +46,7 @@ pub async fn chat_completions(
         let stream = match ProviderExecutor::chat_stream(&ctx, req).await {
             Ok(stream) => stream,
             Err(err) => {
-                return Json(json!({
-                    "error": {
-                        "message": err.to_string()
-                    }
-                }))
-                .into_response();
+                return openai_error_response(status_from_error(&err), err.to_string());
             }
         };
 
@@ -69,12 +58,7 @@ pub async fn chat_completions(
     let response = match ProviderExecutor::chat(&ctx, req).await {
         Ok(response) => response,
         Err(err) => {
-            return Json(json!({
-                "error": {
-                    "message": err.to_string()
-                }
-            }))
-            .into_response();
+            return openai_error_response(status_from_error(&err), err.to_string());
         }
     };
 
@@ -88,40 +72,59 @@ pub async fn embeddings(
     let model = match ctx.store.get("embedding") {
         Ok(Some(model)) => model,
         _ => {
-            return Json(json!({
-                "error": {
-                    "message": "No embedding model configured. Run: nimbox embed <model-name>"
-                }
-            }))
-            .into_response();
+            return openai_error_response(
+                StatusCode::BAD_REQUEST,
+                "No embedding model configured. Run: nimbox embed <model-name>",
+            );
         }
     };
 
     let req = match to_internal_embedding_request(payload, model.clone()) {
         Ok(req) => req,
         Err(err) => {
-            return Json(json!({
-                "error": {
-                    "message": err.to_string()
-                }
-            }))
-            .into_response();
+            return openai_error_response(StatusCode::BAD_REQUEST, err.to_string());
         }
     };
 
     let response = match ProviderExecutor::embeddings(&ctx, req).await {
         Ok(response) => response,
         Err(err) => {
-            return Json(json!({
-                "error": {
-                    "message": err.to_string()
-                }
-            }))
-            .into_response();
+            return openai_error_response(status_from_error(&err), err.to_string());
         }
     };
 
     Json(to_openai_embedding_response(model, response)).into_response()
+}
+
+fn openai_error_response(
+    status: StatusCode,
+    message: impl Into<String>,
+) -> axum::response::Response {
+    (
+        status,
+        Json(json!({
+            "error": {
+                "message": message.into(),
+                "type": "api_error"
+            }
+        })),
+    )
+        .into_response()
+}
+
+fn status_from_error(err: &anyhow::Error) -> StatusCode {
+    let msg = err.to_string().to_lowercase();
+    if msg.contains("429") || msg.contains("rate limit") || msg.contains("too many requests") {
+        StatusCode::TOO_MANY_REQUESTS
+    } else if msg.contains("401") || msg.contains("unauthorized") {
+        StatusCode::UNAUTHORIZED
+    } else if msg.contains("403") || msg.contains("forbidden") {
+        StatusCode::FORBIDDEN
+    } else if msg.contains("404") || msg.contains("not found") {
+        StatusCode::NOT_FOUND
+    } else {
+        StatusCode::BAD_GATEWAY
+    }
 }
 
 fn to_internal_chat_request(payload: Value, model: String) -> anyhow::Result<ChatRequest> {
@@ -301,7 +304,18 @@ fn to_openai_embedding_response(model: String, response: EmbeddingResponse) -> V
 }
 
 fn openai_stream_event(event: anyhow::Result<StreamEvent>) -> Result<Event, axum::Error> {
-    let event = event.map_err(|_| axum::Error::new(std::io::Error::other("stream error")))?;
+    let event = match event {
+        Ok(e) => e,
+        Err(e) => {
+            let data = json!({
+                "error": {
+                    "message": e.to_string(),
+                    "type": "api_error"
+                }
+            });
+            return Ok(Event::default().data(data.to_string()));
+        }
+    };
 
     let data = match event {
         StreamEvent::TextDelta(text) => json!({
@@ -346,11 +360,14 @@ fn openai_stream_event(event: anyhow::Result<StreamEvent>) -> Result<Event, axum
             return Ok(Event::default().data("[DONE]"));
         }
 
-        StreamEvent::Usage(_)
-        | StreamEvent::Error { .. }
-        | StreamEvent::ToolCallFinished { .. } => {
-            json!({})
-        }
+        StreamEvent::Error { message } => json!({
+            "error": {
+                "message": message,
+                "type": "api_error"
+            }
+        }),
+
+        StreamEvent::Usage(_) | StreamEvent::ToolCallFinished { .. } => json!({}),
     };
 
     Ok(Event::default().data(data.to_string()))

@@ -35,8 +35,11 @@ impl KeyManager {
     pub fn report_rate_limit_with_retry(&mut self, key_name: &str, retry_after: Option<u64>) {
         if let Some(key) = self.keys.iter_mut().find(|k| k.name == key_name) {
             key.failures += 1;
-            let secs = retry_after
-                .unwrap_or_else(|| (60u64 * (1u64 << (key.failures - 1).min(6))).min(3600));
+
+            // Respect provider Retry-After when available.
+            // Otherwise use a short exponential backoff to avoid blacking out the pool for too long.
+            let secs =
+                retry_after.unwrap_or_else(|| (3u64 * (1u64 << (key.failures - 1).min(4))).min(60));
             key.cooldown_until = Some(Instant::now() + Duration::from_secs(secs));
         }
     }
@@ -55,6 +58,27 @@ impl KeyManager {
             key.failures = 0; // Reset backoff on success
             key.cooldown_until = None;
         }
+    }
+
+    pub fn debug_state_lines(&self) -> Vec<String> {
+        let now = Instant::now();
+        self.keys
+            .iter()
+            .map(|k| {
+                let state = match k.cooldown_until {
+                    Some(until) if until > now => {
+                        let secs = (until - now).as_secs_f32();
+                        format!("cooldown={:.1}s", secs)
+                    }
+                    _ => "ready".to_string(),
+                };
+
+                format!(
+                    "{}[{},failures={},successes={}]",
+                    k.name, state, k.failures, k.successes
+                )
+            })
+            .collect()
     }
 
     pub fn sync_with_store<S: Store>(&mut self, store: &S) -> Result<()> {
