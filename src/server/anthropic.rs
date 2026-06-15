@@ -14,7 +14,8 @@ use serde_json::{Value, json};
 
 use crate::app::context::AppContext;
 use crate::models::chat::{
-    ChatRequest, ContentPart, Message, Role, StreamEvent, Tool, ToolCall, ToolChoice,
+    ChatRequest, ContentPart, Message, ReasoningEffort, Role, StreamEvent, Tool, ToolCall,
+    ToolChoice,
 };
 use crate::services::provider_executor::ProviderExecutor;
 use crate::storage::store::Store;
@@ -230,7 +231,24 @@ fn to_internal_request(payload: Value, model: String) -> anyhow::Result<ChatRequ
         max_tokens: payload["max_tokens"].as_u64().map(|v| v as u32),
         temperature: payload["temperature"].as_f64().map(|v| v as f32),
         top_p: payload["top_p"].as_f64().map(|v| v as f32),
+        reasoning_effort: parse_reasoning_effort(&payload),
+        thinking_budget_tokens: payload["thinking"]["budget_tokens"]
+            .as_u64()
+            .map(|v| v as u32),
     })
+}
+
+fn parse_reasoning_effort(payload: &Value) -> Option<ReasoningEffort> {
+    let effort = payload["reasoning_effort"]
+        .as_str()
+        .or_else(|| payload["reasoning"]["effort"].as_str())?;
+
+    match effort {
+        "low" => Some(ReasoningEffort::Low),
+        "medium" => Some(ReasoningEffort::Medium),
+        "high" => Some(ReasoningEffort::High),
+        _ => None,
+    }
 }
 
 fn parse_anthropic_message(value: &Value) -> anyhow::Result<Message> {

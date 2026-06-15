@@ -15,9 +15,12 @@ It acts as a translation layer between SDKs and providers, enabling:
 ## 🚀 Features
 
 - OpenAI Chat Completions compatible endpoint
+- OpenAI Responses API endpoint (`/v1/responses`)
+- OpenAI Models endpoint (`/v1/models`) for single configured model
 - Anthropic-style request support
 - Server-Sent Events (SSE) streaming
-- NVIDIA NIM backend integration
+- Reasoning/thinking controls pass-through (`reasoning_effort`, `thinking.budget_tokens`)
+- NVIDIA NIM / OpenRouter / OpenAI backend integration
 - API key management with rotation
 - Local dev-friendly CLI
 
@@ -40,13 +43,15 @@ This will:
 
 ## 🔑 NVIDIA API Key
 
-Nimbox uses NVIDIA NIM as its backend. And supports open-router too.
+Nimbox supports multiple backends/providers including NVIDIA NIM, OpenRouter, and OpenAI.
 
 Get your API key from:
 
 [https://build.nvidia.com/](https://build.nvidia.com/)
 or
 [https://openrouter.ai/](https://openrouter.ai/)
+or
+[https://platform.openai.com/](https://platform.openai.com/)
 
 Then add it:
 
@@ -54,10 +59,16 @@ Then add it:
 nimbox add -n default YOUR_API_KEY
 ```
 
-If openrouter, use:
+If OpenRouter, use:
 
 ```bash
 nimbox provider openrouter
+```
+
+If OpenAI, use:
+
+```bash
+nimbox provider openai
 ```
 
 ---
@@ -71,6 +82,20 @@ nimbox provider openrouter
 ---
 
 ## 🧠 Quick Start
+
+### Provider defaults
+
+Nimbox provider-specific chat model defaults:
+
+- `nvidia-nim` → `meta/llama-4-maverick-17b-128e-instruct`
+- `openrouter` → `openrouter/owl2`
+- `openai` → `gpt-5.4`
+
+Embedding default:
+
+- `nvidia-nim` → `nvidia/nv-embed-v1`
+- `openai` → `text-embedding-3-small`
+- `openrouter` → embedding not supported
 
 ### 1. Start server
 
@@ -89,7 +114,14 @@ http://localhost:11434
 ### 2. Set model
 
 ```bash
-nimbox model meta/llama-3.3-70b-instruct
+# nvidia-nim default
+nimbox model meta/llama-4-maverick-17b-128e-instruct
+
+# openrouter default
+nimbox model openrouter/owl2
+
+# openai default
+nimbox model gpt-5.4
 ```
 
 ---
@@ -97,7 +129,11 @@ nimbox model meta/llama-3.3-70b-instruct
 ### 3. Set embedding model
 
 ```bash
+# nvidia-nim default
 nimbox embed nvidia/nv-embed-v1
+
+# openai default
+nimbox embed text-embedding-3-small
 ```
 
 ---
@@ -128,6 +164,14 @@ nimbox remove -n default
 
 ## 🔌 API Compatibility
 
+Implemented endpoints:
+
+- `POST /v1/chat/completions`
+- `POST /v1/responses`
+- `POST /v1/embeddings`
+- `GET /v1/models` (returns only the currently configured single model)
+- `POST /v1/messages` (Anthropic-style)
+
 ### OpenAI SDK
 
 Point your client to:
@@ -157,7 +201,14 @@ Set:
 ANTHROPIC_BASE_URL=http://localhost:11434
 ```
 
-Nimbox translates requests into internal format and routes them to NVIDIA NIM.
+Nimbox translates requests into internal format and routes them to the configured provider (NVIDIA NIM / OpenRouter / OpenAI).
+
+Reasoning/thinking support:
+
+- OpenAI-style: `reasoning_effort` (or `reasoning.effort`)
+- Anthropic-style: `thinking.budget_tokens`
+
+These fields are normalized into Nimbox internal request DTOs and passed to providers where applicable.
 
 ---
 

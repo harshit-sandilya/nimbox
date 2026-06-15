@@ -1,53 +1,102 @@
-use anyhow::{Result, anyhow};
+use anyhow::anyhow;
 use async_stream::stream;
 use eventsource_stream::Eventsource;
 use futures_util::StreamExt;
 use reqwest::Client;
+use serde_json::json;
 
 use crate::models::chat::{
     ChatRequest, ChatResponse, ContentPart, FinishReason, Message, ProviderStream, Role,
-    StreamEvent, Usage,
+    StreamEvent, ToolCall, Usage,
 };
 use crate::models::embedding::{EmbeddingRequest, EmbeddingResponse};
 use crate::providers::provider::Provider;
 
-pub struct NimProvider {
-    pub client: Client,
-    pub base_url: String,
+pub struct OpenAIProvider {
+    client: Client,
+    base_url: String,
 }
 
-impl NimProvider {
-    pub const NAME: &'static str = "nvidia-nim";
+impl OpenAIProvider {
+    pub const NAME: &'static str = "openai";
 
     pub fn new() -> Self {
         Self {
-            client: Client::new(),
-            base_url: "https://integrate.api.nvidia.com/v1".to_string(),
+            client: Client::builder()
+                .timeout(std::time::Duration::from_secs(120))
+                .connect_timeout(std::time::Duration::from_secs(10))
+                .build()
+                .unwrap(),
+            base_url: "https://api.openai.com/v1".to_string(),
         }
     }
 
-    fn get_model(&self, req: &ChatRequest) -> Result<String> {
+    fn get_model(&self, req: &ChatRequest) -> anyhow::Result<String> {
         req.model
             .clone()
-            .ok_or_else(|| anyhow::anyhow!("No model configured. Run: nimbox model <model-name>"))
+            .ok_or_else(|| anyhow!("No model specified"))
     }
 
-    fn get_embedding_model(&self, req: &EmbeddingRequest) -> Result<String> {
+    fn get_embedding_model(&self, req: &EmbeddingRequest) -> anyhow::Result<String> {
         req.model
             .clone()
-            .ok_or_else(|| anyhow::anyhow!("No model configured. Run: nimbox embed <model-name>"))
+            .ok_or_else(|| anyhow!("No embedding model specified"))
+    }
+
+    fn serialize_messages(&self, messages: &[Message]) -> Vec<serde_json::Value> {
+        messages
+            .iter()
+            .map(|m| {
+                let role = match m.role {
+                    Role::System => "system",
+                    Role::User => "user",
+                    Role::Assistant => "assistant",
+                    Role::Tool => "tool",
+                };
+
+                let content: String = m
+                    .content
+                    .iter()
+                    .filter_map(|p| match p {
+                        ContentPart::Text { text } => Some(text.clone()),
+                    })
+                    .collect::<Vec<_>>()
+                    .join("");
+
+                let mut msg = json!({"role": role, "content": content});
+
+                if !m.tool_calls.is_empty() {
+                    msg["tool_calls"] = json!(
+                        m.tool_calls
+                            .iter()
+                            .map(|tc| json!({
+                                "id": tc.id,
+                                "type": "function",
+                                "function": {"name": tc.name, "arguments": tc.arguments}
+                            }))
+                            .collect::<Vec<_>>()
+                    );
+                }
+
+                if let Some(id) = &m.tool_call_id {
+                    msg["tool_call_id"] = json!(id);
+                }
+
+                msg
+            })
+            .collect()
     }
 
     fn serialize_tools(&self, tools: &[crate::models::chat::Tool]) -> Vec<serde_json::Value> {
         tools
             .iter()
-            .map(|tool| {
-                serde_json::json!({
+            .map(|t| {
+                json!({
                     "type": "function",
                     "function": {
-                        "name": tool.name,
-                        "description": tool.description,
-                        "parameters": tool.parameters
+                        "name": t.name,
+                        "description": t.description,
+                        "parameters": t.parameters
                     }
                 })
             })
@@ -55,199 +104,134 @@ impl NimProvider {
     }
 
     fn serialize_tool_choice(&self, choice: &crate::models::chat::ToolChoice) -> serde_json::Value {
-        use crate::models::chat::ToolChoice;
-
         match choice {
-            ToolChoice::Auto => serde_json::json!("auto"),
-
-            ToolChoice::None => serde_json::json!("none"),
-
-            ToolChoice::Required => serde_json::json!("required"),
-
-            ToolChoice::Tool(name) => serde_json::json!({
+            crate::models::chat::ToolChoice::Auto => json!("auto"),
+            crate::models::chat::ToolChoice::None => json!("none"),
+            crate::models::chat::ToolChoice::Required => json!("required"),
+            crate::models::chat::ToolChoice::Tool(name) => json!({
                 "type": "function",
-                "function": {
-                    "name": name
-                }
+                "function": {"name": name}
             }),
         }
     }
 
-    fn serialize_messages(
-        &self,
-        messages: &[crate::models::chat::Message],
-    ) -> Vec<serde_json::Value> {
-        use crate::models::chat::{ContentPart, Role};
+    fn apply_reasoning_fields(&self, body: &mut serde_json::Value, req: &ChatRequest) {
+        if let Some(effort) = &req.reasoning_effort {
+            body["reasoning_effort"] = json!(effort.as_str());
+        }
 
-        messages
-            .iter()
-            .map(|message| {
-                let role = match message.role {
-                    Role::System => "system",
-                    Role::User => "user",
-                    Role::Assistant => "assistant",
-                    Role::Tool => "tool",
-                };
-
-                let text = message
-                    .content
-                    .iter()
-                    .filter_map(|part| match part {
-                        ContentPart::Text { text } => Some(text.clone()),
-                    })
-                    .collect::<Vec<_>>()
-                    .join("");
-
-                let mut value = serde_json::json!({
-                    "role": role,
-                    "content": text,
-                });
-
-                if role == "tool" {
-                    value["tool_call_id"] = serde_json::json!(message.tool_call_id);
-                }
-
-                if !message.tool_calls.is_empty() {
-                    value["tool_calls"] = serde_json::Value::Array(
-                        message
-                            .tool_calls
-                            .iter()
-                            .map(|call| {
-                                serde_json::json!({
-                                    "id": call.id,
-                                    "type": "function",
-                                    "function": {
-                                        "name": call.name,
-                                        "arguments": call.arguments
-                                    }
-                                })
-                            })
-                            .collect(),
-                    );
-                }
-
-                value
-            })
-            .collect()
+        // OpenAI Chat Completions does not accept Anthropic-style `thinking` object.
+        // We intentionally ignore `thinking_budget_tokens` here for provider compatibility.
     }
+}
 
-    fn parse_tool_calls(&self, json: &serde_json::Value) -> Vec<crate::models::chat::ToolCall> {
-        json["choices"][0]["message"]["tool_calls"]
+#[async_trait::async_trait]
+impl Provider for OpenAIProvider {
+    async fn chat(&self, req: ChatRequest, api_key: String) -> anyhow::Result<ChatResponse> {
+        let url = format!("{}/chat/completions", self.base_url);
+
+        let mut body = json!({
+            "model": self.get_model(&req)?,
+            "messages": self.serialize_messages(&req.messages),
+            "temperature": req.temperature.unwrap_or(1.0),
+            "top_p": req.top_p.unwrap_or(1.0),
+            "stream": false,
+        });
+
+        if let Some(max_tokens) = req.max_tokens {
+            body["max_completion_tokens"] = json!(max_tokens);
+        }
+        if !req.tools.is_empty() {
+            body["tools"] = json!(self.serialize_tools(&req.tools));
+        }
+        if let Some(choice) = &req.tool_choice {
+            body["tool_choice"] = self.serialize_tool_choice(choice);
+        }
+
+        self.apply_reasoning_fields(&mut body, &req);
+
+        let res = self
+            .client
+            .post(&url)
+            .bearer_auth(&api_key)
+            .header("Content-Type", "application/json")
+            .json(&body)
+            .send()
+            .await?;
+
+        let status = res.status();
+        if !status.is_success() {
+            let body = res.text().await?;
+            return Err(anyhow!("OpenAI returned {}: {}", status, body));
+        }
+
+        let json: serde_json::Value = res.json().await?;
+        let choice = &json["choices"][0];
+        let msg = &choice["message"];
+
+        let content = msg["content"].as_str().unwrap_or("").to_string();
+        let tool_calls = msg["tool_calls"]
             .as_array()
             .map(|calls| {
                 calls
                     .iter()
-                    .map(|call| crate::models::chat::ToolCall {
-                        id: call["id"].as_str().unwrap_or("").to_string(),
-
-                        name: call["function"]["name"].as_str().unwrap_or("").to_string(),
-
-                        arguments: call["function"]["arguments"]
+                    .map(|c| ToolCall {
+                        id: c["id"].as_str().unwrap_or("").to_string(),
+                        name: c["function"]["name"].as_str().unwrap_or("").to_string(),
+                        arguments: c["function"]["arguments"]
                             .as_str()
                             .unwrap_or("")
                             .to_string(),
                     })
                     .collect()
             })
-            .unwrap_or_default()
-    }
+            .unwrap_or_default();
 
-    fn apply_reasoning_fields(&self, body: &mut serde_json::Value, req: &ChatRequest) {
-        if let Some(effort) = &req.reasoning_effort {
-            body["reasoning_effort"] = serde_json::json!(effort.as_str());
-        }
-        if let Some(budget) = req.thinking_budget_tokens {
-            body["thinking"] = serde_json::json!({ "budget_tokens": budget });
-        }
-    }
-}
-
-#[async_trait::async_trait]
-impl Provider for NimProvider {
-    async fn chat(&self, req: ChatRequest, api_key: String) -> Result<ChatResponse> {
-        let url = format!("{}/chat/completions", self.base_url);
-
-        let mut body = serde_json::json!({
-            "model": self.get_model(&req)?,
-            "messages": self.serialize_messages(&req.messages),
-            "max_tokens": req.max_tokens.unwrap_or(32768),
-            "temperature": req.temperature.unwrap_or(1.0),
-            "top_p": req.top_p.unwrap_or(1.0),
-            "stream": false,
-        });
-
-        if !req.tools.is_empty() {
-            body["tools"] = serde_json::Value::Array(self.serialize_tools(&req.tools));
-        }
-
-        if let Some(choice) = &req.tool_choice {
-            body["tool_choice"] = self.serialize_tool_choice(choice);
-        }
-
-        self.apply_reasoning_fields(&mut body, &req);
-
-        let res = self
-            .client
-            .post(url)
-            .bearer_auth(api_key)
-            .header("Content-Type", "application/json")
-            .header("Accept", "application/json")
-            .json(&body)
-            .send()
-            .await?;
-
-        let status = res.status();
-
-        if !status.is_success() {
-            let body = res.text().await?;
-
-            return Err(anyhow!("NVIDIA NIM returned {}: {}", status, body));
-        }
-
-        let json = res.json::<serde_json::Value>().await?;
-        let content = json["choices"][0]["message"]["content"]
-            .as_str()
-            .unwrap_or("")
-            .to_string();
-
-        let tool_calls = self.parse_tool_calls(&json);
-        let message = Message {
-            role: Role::Assistant,
-            content: vec![ContentPart::Text { text: content }],
-            tool_calls,
-            tool_call_id: None,
-        };
-        let finish_reason = match json["choices"][0]["finish_reason"].as_str().unwrap_or("") {
-            "stop" => FinishReason::Stop,
-            "length" => FinishReason::Length,
+        let finish_reason = match choice["finish_reason"].as_str().unwrap_or("stop") {
             "tool_calls" => FinishReason::ToolCalls,
+            "length" => FinishReason::Length,
             "content_filter" => FinishReason::ContentFilter,
-            _ => FinishReason::Unknown,
+            _ => FinishReason::Stop,
         };
-        let usage = json.get("usage").map(|usage| Usage {
-            prompt_tokens: usage["prompt_tokens"].as_u64().unwrap_or(0) as u32,
-            completion_tokens: usage["completion_tokens"].as_u64().unwrap_or(0) as u32,
-            total_tokens: usage["total_tokens"].as_u64().unwrap_or(0) as u32,
+
+        let usage = json.get("usage").map(|u| Usage {
+            prompt_tokens: u["prompt_tokens"].as_u64().unwrap_or(0) as u32,
+            completion_tokens: u["completion_tokens"].as_u64().unwrap_or(0) as u32,
+            total_tokens: u["total_tokens"].as_u64().unwrap_or(0) as u32,
         });
+
         Ok(ChatResponse {
-            message,
+            message: Message {
+                role: Role::Assistant,
+                content: vec![ContentPart::Text { text: content }],
+                tool_calls,
+                tool_call_id: None,
+            },
             finish_reason,
             usage,
         })
     }
 
-    async fn chat_stream(&self, req: ChatRequest, api_key: String) -> Result<ProviderStream> {
+    async fn chat_stream(
+        &self,
+        req: ChatRequest,
+        api_key: String,
+    ) -> anyhow::Result<ProviderStream> {
         let url = format!("{}/chat/completions", self.base_url);
-        let mut body = serde_json::json!({
+
+        let mut body = json!({
             "model": self.get_model(&req)?,
             "messages": self.serialize_messages(&req.messages),
-            "max_tokens": req.max_tokens.unwrap_or(32768),
             "temperature": req.temperature.unwrap_or(1.0),
             "top_p": req.top_p.unwrap_or(1.0),
             "stream": true,
         });
+
+        if let Some(max_tokens) = req.max_tokens {
+            body["max_completion_tokens"] = json!(max_tokens);
+        }
         if !req.tools.is_empty() {
-            body["tools"] = serde_json::Value::Array(self.serialize_tools(&req.tools));
+            body["tools"] = json!(self.serialize_tools(&req.tools));
         }
         if let Some(choice) = &req.tool_choice {
             body["tool_choice"] = self.serialize_tool_choice(choice);
@@ -257,8 +241,8 @@ impl Provider for NimProvider {
 
         let res = self
             .client
-            .post(url)
-            .bearer_auth(api_key)
+            .post(&url)
+            .bearer_auth(&api_key)
             .header("Content-Type", "application/json")
             .header("Accept", "text/event-stream")
             .json(&body)
@@ -268,7 +252,7 @@ impl Provider for NimProvider {
         let status = res.status();
         if !status.is_success() {
             let body = res.text().await?;
-            return Err(anyhow!("NVIDIA NIM returned {}: {}", status, body));
+            return Err(anyhow!("OpenAI returned {}: {}", status, body));
         }
 
         let mut sse = res.bytes_stream().eventsource();
@@ -280,7 +264,7 @@ impl Provider for NimProvider {
                 let event = match event_result {
                     Ok(e) => e,
                     Err(e) => {
-                        yield Ok(StreamEvent::Error { message: format!("Parse error: {}", e) });
+                        yield Err(anyhow!("SSE error: {}", e));
                         continue;
                     }
                 };
@@ -297,7 +281,10 @@ impl Provider for NimProvider {
 
                 let json: serde_json::Value = match serde_json::from_str(&event.data) {
                     Ok(v) => v,
-                    Err(_) => continue,
+                    Err(e) => {
+                        yield Ok(StreamEvent::Error { message: format!("Parse error: {}", e) });
+                        continue;
+                    }
                 };
 
                 let delta = &json["choices"][0]["delta"];
@@ -321,7 +308,7 @@ impl Provider for NimProvider {
 
                         let entry = tool_state.entry(index).or_insert_with(|| (id.clone(), false));
                         if !id.is_empty() && entry.0.is_empty() {
-                            entry.0 = id.clone();
+                            entry.0 = id;
                         }
                         if !name.is_empty() && !entry.1 {
                             entry.1 = true;
@@ -370,52 +357,45 @@ impl Provider for NimProvider {
         &self,
         req: EmbeddingRequest,
         api_key: String,
-    ) -> Result<EmbeddingResponse> {
+    ) -> anyhow::Result<EmbeddingResponse> {
         let url = format!("{}/embeddings", self.base_url);
 
-        let body = serde_json::json!({
-            "input": req.input,
+        let body = json!({
             "model": self.get_embedding_model(&req)?,
-            "input_type": "query",
-            "encoding_format": "float",
-            "truncate": "NONE"
+            "input": req.input,
         });
 
         let res = self
             .client
-            .post(url)
-            .bearer_auth(api_key)
+            .post(&url)
+            .bearer_auth(&api_key)
             .header("Content-Type", "application/json")
-            .header("Accept", "application/json")
             .json(&body)
             .send()
             .await?;
 
         let status = res.status();
-
         if !status.is_success() {
             let body = res.text().await?;
-
-            return Err(anyhow!("NVIDIA NIM returned {}: {}", status, body));
+            return Err(anyhow!("OpenAI returned {}: {}", status, body));
         }
 
-        let json = res.json::<serde_json::Value>().await?;
+        let json: serde_json::Value = res.json().await?;
         let vectors = json["data"]
             .as_array()
-            .ok_or_else(|| anyhow!("Missing data array"))?
+            .ok_or_else(|| anyhow!("Invalid OpenAI embeddings response: missing data array"))?
             .iter()
             .map(|item| {
                 item["embedding"]
                     .as_array()
-                    .ok_or_else(|| anyhow!("Missing embedding array"))?
-                    .iter()
-                    .map(|v| {
-                        v.as_f64()
-                            .ok_or_else(|| anyhow!("Embedding contains non-float value"))
+                    .ok_or_else(|| anyhow!("Invalid OpenAI embeddings response: missing embedding"))
+                    .map(|arr| {
+                        arr.iter()
+                            .map(|v| v.as_f64().unwrap_or(0.0))
+                            .collect::<Vec<f64>>()
                     })
-                    .collect::<Result<Vec<f64>>>()
             })
-            .collect::<Result<Vec<Vec<f64>>>>()?;
+            .collect::<anyhow::Result<Vec<Vec<f64>>>>()?;
 
         Ok(EmbeddingResponse { vectors })
     }

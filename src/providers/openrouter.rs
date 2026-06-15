@@ -109,6 +109,15 @@ impl OpenRouterProvider {
             }),
         }
     }
+
+    fn apply_reasoning_fields(&self, body: &mut serde_json::Value, req: &ChatRequest) {
+        if let Some(effort) = &req.reasoning_effort {
+            body["reasoning_effort"] = json!(effort.as_str());
+        }
+        if let Some(budget) = req.thinking_budget_tokens {
+            body["thinking"] = json!({ "budget_tokens": budget });
+        }
+    }
 }
 
 #[async_trait::async_trait]
@@ -133,6 +142,8 @@ impl Provider for OpenRouterProvider {
         if let Some(choice) = &req.tool_choice {
             body["tool_choice"] = self.serialize_tool_choice(choice);
         }
+
+        self.apply_reasoning_fields(&mut body, &req);
 
         let res = self
             .client
@@ -222,6 +233,8 @@ impl Provider for OpenRouterProvider {
         if let Some(choice) = &req.tool_choice {
             body["tool_choice"] = self.serialize_tool_choice(choice);
         }
+
+        self.apply_reasoning_fields(&mut body, &req);
 
         let res = self
             .client
