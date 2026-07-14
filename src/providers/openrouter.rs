@@ -11,7 +11,7 @@ use crate::models::chat::{
     StreamEvent, ToolCall, Usage,
 };
 use crate::models::embedding::{EmbeddingRequest, EmbeddingResponse};
-use crate::providers::Provider;
+use crate::providers::provider::{ModelInfo, Provider};
 
 pub struct OpenRouterProvider {
     client: Client,
@@ -122,6 +122,10 @@ impl OpenRouterProvider {
 
 #[async_trait::async_trait]
 impl Provider for OpenRouterProvider {
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
     async fn chat(&self, req: ChatRequest, api_key: String) -> anyhow::Result<ChatResponse> {
         let url = format!("{}/chat/completions", self.base_url);
 
@@ -356,5 +360,30 @@ impl Provider for OpenRouterProvider {
         _api_key: String,
     ) -> anyhow::Result<EmbeddingResponse> {
         Err(anyhow!("OpenRouter does not support embeddings"))
+    }
+
+    async fn models(&self, api_key: String) -> anyhow::Result<Vec<ModelInfo>> {
+        let res = self
+            .client
+            .get(format!("{}/models", self.base_url))
+            .bearer_auth(api_key)
+            .send()
+            .await?;
+        let status = res.status();
+        if !status.is_success() {
+            return Err(anyhow!(
+                "OpenRouter returned {}: {}",
+                status,
+                res.text().await?
+            ));
+        }
+        let json: serde_json::Value = res.json().await?;
+        Ok(json["data"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|model| model["id"].as_str())
+            .map(ModelInfo::unknown)
+            .collect())
     }
 }

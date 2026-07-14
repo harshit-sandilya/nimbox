@@ -1,6 +1,6 @@
 use crate::{
     app::context::AppContext,
-    providers::{provider_exists, supported_providers},
+    providers::{canonical_provider, provider_exists, supported_providers},
     storage::store::Store,
 };
 use anyhow::{Result, bail};
@@ -22,6 +22,9 @@ pub fn run(ctx: &AppContext, provider: Option<String>, list: bool) -> Result<()>
         bail!("unsupported provider '{}'", provider);
     }
 
+    let provider = canonical_provider(&provider)
+        .expect("provider was validated")
+        .to_string();
     ctx.store.set("provider", provider.clone())?;
 
     println!("Provider set to '{}'", provider);

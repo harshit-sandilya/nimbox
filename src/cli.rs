@@ -1,10 +1,16 @@
 use clap::{Parser, Subcommand};
 
+// Release builds can inject this (e.g. v0.1.4) from CI.
+const NIMBOX_BUILD_VERSION: &str = match option_env!("NIMBOX_BUILD_VERSION") {
+    Some(v) => v,
+    None => env!("CARGO_PKG_VERSION"),
+};
+
 #[derive(Parser)]
 #[command(
     name = "nimbox",
-    version,
-    about = "NVIDIA NIM local compatibility proxy"
+    version = NIMBOX_BUILD_VERSION,
+    about = "Cross-provider AI API testing and compatibility proxy"
 )]
 pub struct Cli {
     #[command(subcommand)]
@@ -13,16 +19,16 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Commands {
-    /// Start Nimbox proxy server
+    /// Start the Nimbox proxy server
     Start {
-        #[arg(short, long, default_value_t = 11434)]
+        #[arg(short, long, default_value_t = 11500)]
         port: u16,
     },
 
     /// Stop Nimbox proxy server
     Stop,
 
-    /// Add an NVIDIA API key
+    /// Add an API key for the active provider
     Add {
         #[arg(short, long)]
         name: String,
@@ -30,7 +36,7 @@ pub enum Commands {
         key: String,
     },
 
-    /// Remove an NVIDIA API key
+    /// Remove an API key from the active provider
     Remove {
         #[arg(short, long)]
         name: Option<String>,
@@ -39,7 +45,7 @@ pub enum Commands {
         all: bool,
     },
 
-    /// List configured API keys
+    /// List API keys for the active provider
     List,
 
     /// Set chat/completion model

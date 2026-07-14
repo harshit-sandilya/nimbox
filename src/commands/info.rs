@@ -12,7 +12,7 @@ pub fn run(ctx: &AppContext) -> Result<()> {
         .get("embedding")?
         .unwrap_or_else(|| "not set".into());
 
-    let keys = ctx.store.get_named_keys()?;
+    let keys = ctx.store.get_provider_keys(&provider)?;
 
     println!("Provider:");
     println!("  {}", provider);

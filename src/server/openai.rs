@@ -26,17 +26,14 @@ pub async fn chat_completions(
     State(ctx): State<AppContext>,
     Json(payload): Json<Value>,
 ) -> impl IntoResponse {
-    let model = match ctx.store.get("model") {
-        Ok(Some(model)) => model,
-        _ => {
-            return openai_error_response(
-                StatusCode::BAD_REQUEST,
-                "No model configured. Run: nimbox model <model-name>",
-            );
+    let model = match request_or_configured_model(&ctx, &payload, "model") {
+        Ok(model) => model,
+        Err(message) => {
+            return openai_error_response(StatusCode::BAD_REQUEST, message);
         }
     };
 
-    let req = match to_internal_chat_request(payload.clone(), model) {
+    let req = match to_internal_chat_request(payload.clone(), model.clone()) {
         Ok(req) => req,
         Err(err) => {
             return openai_error_response(StatusCode::BAD_REQUEST, err.to_string());
@@ -63,39 +60,60 @@ pub async fn chat_completions(
         }
     };
 
-    Json(to_openai_chat_response(response)).into_response()
+    Json(to_openai_chat_response(response, model)).into_response()
 }
 
 pub async fn models(State(ctx): State<AppContext>) -> impl IntoResponse {
-    let configured = ctx.store.get("model").ok().flatten();
-
-    let data = configured
-        .map(|id| {
-            vec![json!({
-                "id": id,
+    let mut available = match ProviderExecutor::models(&ctx).await {
+        Ok(models) => models,
+        Err(err) => return openai_error_response(status_from_error(&err), err.to_string()),
+    };
+    if let Some(configured) = ctx.store.get("model").ok().flatten() {
+        if !available.iter().any(|model| model.id == configured) {
+            available.push(crate::providers::provider::ModelInfo::unknown(configured));
+        }
+    }
+    if let Some(configured) = ctx.store.get("embedding").ok().flatten() {
+        if let Some(model) = available.iter_mut().find(|model| model.id == configured) {
+            model.supports_embeddings = true;
+        } else {
+            available.push(crate::providers::provider::ModelInfo {
+                id: configured,
+                supports_chat: false,
+                supports_embeddings: true,
+            });
+        }
+    }
+    let data = available
+        .into_iter()
+        .map(|model| {
+            json!({
+                "id": model.id,
                 "object": "model",
-                "owned_by": "nimbox"
-            })]
+                "owned_by": ctx.provider.name(),
+                "capabilities": {
+                    "chat": model.supports_chat,
+                    "embeddings": model.supports_embeddings
+                }
+            })
         })
-        .unwrap_or_default();
+        .collect::<Vec<_>>();
 
     Json(json!({
         "object": "list",
         "data": data
     }))
+    .into_response()
 }
 
 pub async fn responses(
     State(ctx): State<AppContext>,
     Json(payload): Json<Value>,
 ) -> impl IntoResponse {
-    let model = match ctx.store.get("model") {
-        Ok(Some(model)) => model,
-        _ => {
-            return openai_error_response(
-                StatusCode::BAD_REQUEST,
-                "No model configured. Run: nimbox model <model-name>",
-            );
+    let model = match request_or_configured_model(&ctx, &payload, "model") {
+        Ok(model) => model,
+        Err(message) => {
+            return openai_error_response(StatusCode::BAD_REQUEST, message);
         }
     };
 
@@ -126,9 +144,14 @@ pub async fn embeddings(
     State(ctx): State<AppContext>,
     Json(payload): Json<Value>,
 ) -> impl IntoResponse {
-    let model = match ctx.store.get("embedding") {
-        Ok(Some(model)) => model,
-        _ => {
+    let model = match payload["model"]
+        .as_str()
+        .filter(|model| !model.is_empty())
+        .map(ToString::to_string)
+        .or_else(|| ctx.store.get("embedding").ok().flatten())
+    {
+        Some(model) => model,
+        None => {
             return openai_error_response(
                 StatusCode::BAD_REQUEST,
                 "No embedding model configured. Run: nimbox embed <model-name>",
@@ -182,6 +205,21 @@ fn status_from_error(err: &anyhow::Error) -> StatusCode {
     } else {
         StatusCode::BAD_GATEWAY
     }
+}
+
+fn request_or_configured_model(
+    ctx: &AppContext,
+    payload: &Value,
+    config_key: &str,
+) -> Result<String, String> {
+    payload["model"]
+        .as_str()
+        .filter(|model| !model.is_empty())
+        .map(ToString::to_string)
+        .or_else(|| ctx.store.get(config_key).ok().flatten())
+        .ok_or_else(|| {
+            "No model supplied or configured. Run: nimbox model <model-name>".to_string()
+        })
 }
 
 fn to_internal_chat_request(payload: Value, model: String) -> anyhow::Result<ChatRequest> {
@@ -335,11 +373,12 @@ fn parse_tool_choice(value: Option<&Value>) -> Option<ToolChoice> {
     }
 }
 
-fn to_openai_chat_response(response: crate::models::chat::ChatResponse) -> Value {
+fn to_openai_chat_response(response: crate::models::chat::ChatResponse, model: String) -> Value {
     json!({
         "id": format!("chatcmpl-{}", now_ms()),
         "object": "chat.completion",
         "created": now_secs(),
+        "model": model,
         "choices": [{
             "index": 0,
             "message": {
@@ -573,7 +612,7 @@ fn openai_stream_event(event: anyhow::Result<StreamEvent>) -> Result<Event, axum
             }
         }),
 
-        StreamEvent::Usage(_) | StreamEvent::ToolCallFinished { .. } => json!({}),
+        StreamEvent::Usage(_) | StreamEvent::ToolCallFinished => json!({}),
     };
 
     Ok(Event::default().data(data.to_string()))

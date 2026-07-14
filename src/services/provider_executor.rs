@@ -2,6 +2,7 @@ use crate::app::context::AppContext;
 use crate::{
     models::chat::{ChatRequest, ChatResponse, ProviderStream, StreamEvent},
     models::embedding::{EmbeddingRequest, EmbeddingResponse},
+    providers::provider::ModelInfo,
 };
 use anyhow::{Result, anyhow};
 use futures_util::StreamExt;
@@ -85,11 +86,37 @@ fn parse_openrouter_reset_epoch_ms(msg: &str) -> Option<u64> {
 
 impl ProviderExecutor {
     async fn acquire_key(ctx: &AppContext) -> Result<(String, String)> {
+        if !ctx.provider.requires_api_key() {
+            return Ok(("local".to_string(), String::new()));
+        }
         let mut km = ctx.key_manager.write().await;
         km.next_key().ok_or_else(|| {
-            // Check if keys exist but all on cooldown vs no keys at all
-            anyhow!("No API keys available — all keys may be rate limited")
+            anyhow!(
+                "No API keys available for '{}'. Add one with: nimbox add -n default <key>",
+                ctx.provider.name()
+            )
         })
+    }
+
+    pub async fn models(ctx: &AppContext) -> Result<Vec<ModelInfo>> {
+        let (key_name, api_key) = Self::acquire_key(ctx).await?;
+        let result = ctx.provider.models(api_key).await;
+        let mut km = ctx.key_manager.write().await;
+        match result {
+            Ok(models) => {
+                km.report_success(&key_name);
+                Ok(models)
+            }
+            Err(err) => {
+                if is_rate_limit(&err) {
+                    let retry_after = parse_retry_after(&err);
+                    km.report_rate_limit_with_retry(&key_name, retry_after);
+                } else {
+                    km.report_error(&key_name);
+                }
+                Err(err)
+            }
+        }
     }
 
     pub async fn chat(ctx: &AppContext, req: ChatRequest) -> Result<ChatResponse> {

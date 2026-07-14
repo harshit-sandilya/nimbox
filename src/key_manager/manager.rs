@@ -81,8 +81,8 @@ impl KeyManager {
             .collect()
     }
 
-    pub fn sync_with_store<S: Store>(&mut self, store: &S) -> Result<()> {
-        let stored = store.get_named_keys()?;
+    pub fn sync_with_store<S: Store>(&mut self, store: &S, provider: &str) -> Result<()> {
+        let stored = store.get_provider_keys(provider)?;
         let stored_names: Vec<String> = stored.iter().map(|k| k.name.clone()).collect();
         for api_key in stored {
             match self.keys.iter_mut().find(|k| k.name == api_key.name) {

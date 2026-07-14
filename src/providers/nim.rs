@@ -9,7 +9,7 @@ use crate::models::chat::{
     StreamEvent, Usage,
 };
 use crate::models::embedding::{EmbeddingRequest, EmbeddingResponse};
-use crate::providers::provider::Provider;
+use crate::providers::provider::{ModelInfo, Provider};
 
 pub struct NimProvider {
     pub client: Client,
@@ -164,6 +164,10 @@ impl NimProvider {
 
 #[async_trait::async_trait]
 impl Provider for NimProvider {
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
     async fn chat(&self, req: ChatRequest, api_key: String) -> Result<ChatResponse> {
         let url = format!("{}/chat/completions", self.base_url);
 
@@ -418,5 +422,30 @@ impl Provider for NimProvider {
             .collect::<Result<Vec<Vec<f64>>>>()?;
 
         Ok(EmbeddingResponse { vectors })
+    }
+
+    async fn models(&self, api_key: String) -> Result<Vec<ModelInfo>> {
+        let res = self
+            .client
+            .get(format!("{}/models", self.base_url))
+            .bearer_auth(api_key)
+            .send()
+            .await?;
+        let status = res.status();
+        if !status.is_success() {
+            return Err(anyhow!(
+                "NVIDIA NIM returned {}: {}",
+                status,
+                res.text().await?
+            ));
+        }
+        let json: serde_json::Value = res.json().await?;
+        Ok(json["data"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|model| model["id"].as_str())
+            .map(ModelInfo::unknown)
+            .collect())
     }
 }

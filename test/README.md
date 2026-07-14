@@ -19,13 +19,22 @@ From repo root:
 docker compose build
 ```
 
-Start a fresh interactive one with service ports exposed:
+Start Nimbox and its Ollama dependency, then enter the Nimbox shell:
 
 ```bash
-docker compose run --service-ports nimbox
+docker compose up -d --build
+docker compose exec nimbox bash
 ```
 
 > Docker image installs Python + pip deps (`test/requirements.txt`) during build.
+
+For a quick Ollama integration check instead of the cloud benchmark flow below, run:
+
+```bash
+./test/ollama-smoke.sh
+```
+
+It downloads small chat and embedding models on the first run, then tests model discovery, chat, embeddings, and the Gemini-compatible route through Nimbox.
 
 ---
 
@@ -60,14 +69,14 @@ Nimbox should also have those keys added via CLI for routed rotation behavior.
 
 Optional Nimbox URL override:
 
-- `NIMBOX_BASE_URL` (default: `http://localhost:11434`)
+- `NIMBOX_BASE_URL` (default: `http://localhost:11500`)
 
 Important with OpenAI SDK:
 
 - SDK base URL must include `/v1`.
 - This script auto-normalizes it, so both work:
-    - `http://localhost:11434`
-    - `http://localhost:11434/v1`
+    - `http://localhost:11500`
+    - `http://localhost:11500/v1`
 
 ---
 
@@ -82,7 +91,7 @@ nimbox remove --all
 nimbox add -n key1 "$OPENROUTER_KEY_1"
 nimbox add -n key2 "$OPENROUTER_KEY_2"
 nimbox add -n key3 "$OPENROUTER_KEY_3"
-NIMBOX_DAEMON=1 nimbox start --port 11434
+NIMBOX_DAEMON=1 nimbox start --port 11500
 ```
 
 ### NVIDIA NIM setup
@@ -92,7 +101,7 @@ nimbox provider nvidia-nim
 nimbox model meta/llama-4-maverick-17b-128e-instruct
 nimbox remove --all
 nimbox add -n key1 "$NIM_KEY_1"
-NIMBOX_DAEMON=1 nimbox start --port 11434
+NIMBOX_DAEMON=1 nimbox start --port 11500
 ```
 
 ---
@@ -152,7 +161,7 @@ Enable key debug logs before starting Nimbox:
 
 ```bash
 export NIMBOX_DEBUG_KEYS=1
-NIMBOX_DAEMON=1 nimbox start --port 11434
+NIMBOX_DAEMON=1 nimbox start --port 11500
 ```
 
 You will see logs like:

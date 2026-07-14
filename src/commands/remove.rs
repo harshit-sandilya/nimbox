@@ -3,14 +3,16 @@ use anyhow::{Result, bail};
 use crate::{app::context::AppContext, storage::store::Store};
 
 pub async fn run(ctx: &AppContext, name: Option<String>, all: bool) -> Result<()> {
+    let provider = ctx.store.get("provider")?.unwrap_or_default();
+
     if all {
-        ctx.store.delete_all_keys()?;
+        ctx.store.delete_all_keys(&provider)?;
         ctx.key_manager
             .write()
             .await
-            .sync_with_store(ctx.store.as_ref())?;
+            .sync_with_store(ctx.store.as_ref(), &provider)?;
 
-        println!("Removed all API keys");
+        println!("Removed all API keys for '{}'", provider);
 
         return Ok(());
     }
@@ -20,11 +22,11 @@ pub async fn run(ctx: &AppContext, name: Option<String>, all: bool) -> Result<()
         None => bail!("provide --name or --all"),
     };
 
-    ctx.store.delete_key(&name)?;
+    ctx.store.delete_key(&provider, &name)?;
     ctx.key_manager
         .write()
         .await
-        .sync_with_store(ctx.store.as_ref())?;
+        .sync_with_store(ctx.store.as_ref(), &provider)?;
 
     println!("Removed key '{}'", name);
 

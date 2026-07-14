@@ -24,9 +24,14 @@ pub async fn messages(
     State(ctx): State<AppContext>,
     Json(payload): Json<Value>,
 ) -> impl IntoResponse {
-    let model = match ctx.store.get("model") {
-        Ok(Some(model)) => model,
-        _ => {
+    let model = match payload["model"]
+        .as_str()
+        .filter(|model| !model.is_empty())
+        .map(ToString::to_string)
+        .or_else(|| ctx.store.get("model").ok().flatten())
+    {
+        Some(model) => model,
+        None => {
             return anthropic_error_response(
                 StatusCode::BAD_REQUEST,
                 "invalid_request_error",
@@ -35,7 +40,7 @@ pub async fn messages(
         }
     };
 
-    let req = match to_internal_request(payload.clone(), model) {
+    let req = match to_internal_request(payload.clone(), model.clone()) {
         Ok(req) => req,
         Err(err) => {
             return anthropic_error_response(
@@ -59,6 +64,7 @@ pub async fn messages(
         };
 
         let msg_id = format!("msg_{}", now_ms());
+        let stream_model = model.clone();
 
         let start_event = futures_util::stream::once(async move {
             Ok::<Event, axum::Error>(
@@ -70,7 +76,7 @@ pub async fn messages(
                             "type": "message",
                             "role": "assistant",
                             "content": [],
-                            "model": "proxy",
+                            "model": stream_model,
                             "stop_reason": null,
                             "stop_sequence": null,
                             "usage": {"input_tokens": 0, "output_tokens": 0}
@@ -147,7 +153,7 @@ pub async fn messages(
         }
     };
 
-    Json(to_anthropic_response(response)).into_response()
+    Json(to_anthropic_response(response, &model)).into_response()
 }
 
 fn anthropic_error_response(
@@ -338,7 +344,7 @@ fn parse_anthropic_tool_choice(value: Option<&Value>) -> Option<ToolChoice> {
     }
 }
 
-fn to_anthropic_response(response: crate::models::chat::ChatResponse) -> Value {
+fn to_anthropic_response(response: crate::models::chat::ChatResponse, model: &str) -> Value {
     let mut content: Vec<Value> = Vec::new();
 
     // Text content
@@ -378,7 +384,7 @@ fn to_anthropic_response(response: crate::models::chat::ChatResponse) -> Value {
         "type": "message",
         "role": "assistant",
         "content": content,
-        "model": "proxy",
+        "model": model,
         "stop_reason": stop_reason,
         "stop_sequence": null,
         "usage": response.usage.map(|u| json!({
@@ -452,7 +458,7 @@ fn anthropic_stream_event(
             )))
         }
 
-        StreamEvent::ToolCallFinished { .. } => {
+        StreamEvent::ToolCallFinished => {
             let idx = *tool_index;
             Some(Ok(Event::default().event("content_block_stop").data(
                 json!({

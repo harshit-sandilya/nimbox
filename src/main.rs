@@ -27,12 +27,12 @@ async fn main() -> Result<()> {
 
     let provider_name = store
         .get("provider")?
-        .unwrap_or_else(|| "nvidia-nim".to_string());
+        .unwrap_or_else(|| "ollama".to_string());
 
     let provider = providers::get_provider(&provider_name)?;
     let key_manager = {
         let mut km = KeyManager::new();
-        km.sync_with_store(store.as_ref())?;
+        km.sync_with_store(store.as_ref(), &provider_name)?;
         Arc::new(RwLock::new(km))
     };
 

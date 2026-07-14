@@ -1,19 +1,41 @@
 services:
+  ollama:
+    image: ollama/ollama:latest
+    container_name: nimbox-ollama
+    volumes:
+      - ollama_data:/root/.ollama
+    ports:
+      # Keep host 11434 free for an existing local Ollama installation.
+      - "11435:11434"
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 5s
+    restart: unless-stopped
+
   nimbox:
     build: .
     container_name: nimbox-dev
+    depends_on:
+      ollama:
+        condition: service_healthy
+    environment:
+      NIMBOX_OLLAMA_URL: http://ollama:11434
 
     volumes:
       - .:/workspace
       - nimbox_data:/root/.nimbox
 
     ports:
-      - "11434:11434"
+      - "11500:11500"
 
     stdin_open: true
     tty: true
 
-    command: /bin/bash
+    command: ["sleep", "infinity"]
 
 volumes:
   nimbox_data:
+  ollama_data:

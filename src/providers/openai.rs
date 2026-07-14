@@ -10,24 +10,30 @@ use crate::models::chat::{
     StreamEvent, ToolCall, Usage,
 };
 use crate::models::embedding::{EmbeddingRequest, EmbeddingResponse};
-use crate::providers::provider::Provider;
+use crate::providers::provider::{ModelInfo, Provider};
 
 pub struct OpenAIProvider {
     client: Client,
     base_url: String,
+    label: &'static str,
 }
 
 impl OpenAIProvider {
     pub const NAME: &'static str = "openai";
 
     pub fn new() -> Self {
+        Self::compatible("OpenAI", "https://api.openai.com/v1".to_string())
+    }
+
+    pub(crate) fn compatible(label: &'static str, base_url: String) -> Self {
         Self {
             client: Client::builder()
                 .timeout(std::time::Duration::from_secs(120))
                 .connect_timeout(std::time::Duration::from_secs(10))
                 .build()
                 .unwrap(),
-            base_url: "https://api.openai.com/v1".to_string(),
+            base_url,
+            label,
         }
     }
 
@@ -127,6 +133,10 @@ impl OpenAIProvider {
 
 #[async_trait::async_trait]
 impl Provider for OpenAIProvider {
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
     async fn chat(&self, req: ChatRequest, api_key: String) -> anyhow::Result<ChatResponse> {
         let url = format!("{}/chat/completions", self.base_url);
 
@@ -162,7 +172,7 @@ impl Provider for OpenAIProvider {
         let status = res.status();
         if !status.is_success() {
             let body = res.text().await?;
-            return Err(anyhow!("OpenAI returned {}: {}", status, body));
+            return Err(anyhow!("{} returned {}: {}", self.label, status, body));
         }
 
         let json: serde_json::Value = res.json().await?;
@@ -252,7 +262,7 @@ impl Provider for OpenAIProvider {
         let status = res.status();
         if !status.is_success() {
             let body = res.text().await?;
-            return Err(anyhow!("OpenAI returned {}: {}", status, body));
+            return Err(anyhow!("{} returned {}: {}", self.label, status, body));
         }
 
         let mut sse = res.bytes_stream().eventsource();
@@ -377,7 +387,7 @@ impl Provider for OpenAIProvider {
         let status = res.status();
         if !status.is_success() {
             let body = res.text().await?;
-            return Err(anyhow!("OpenAI returned {}: {}", status, body));
+            return Err(anyhow!("{} returned {}: {}", self.label, status, body));
         }
 
         let json: serde_json::Value = res.json().await?;
@@ -398,5 +408,31 @@ impl Provider for OpenAIProvider {
             .collect::<anyhow::Result<Vec<Vec<f64>>>>()?;
 
         Ok(EmbeddingResponse { vectors })
+    }
+
+    async fn models(&self, api_key: String) -> anyhow::Result<Vec<ModelInfo>> {
+        let res = self
+            .client
+            .get(format!("{}/models", self.base_url))
+            .bearer_auth(api_key)
+            .send()
+            .await?;
+        let status = res.status();
+        if !status.is_success() {
+            return Err(anyhow!(
+                "{} returned {}: {}",
+                self.label,
+                status,
+                res.text().await?
+            ));
+        }
+        let json: serde_json::Value = res.json().await?;
+        Ok(json["data"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|model| model["id"].as_str())
+            .map(ModelInfo::unknown)
+            .collect())
     }
 }

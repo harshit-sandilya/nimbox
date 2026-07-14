@@ -111,7 +111,7 @@ def _sdk_chat_call(
 
 
 def _nimbox_sdk_base_url() -> str:
-    raw = os.getenv("NIMBOX_BASE_URL", "http://localhost:11434").rstrip("/")
+    raw = os.getenv("NIMBOX_BASE_URL", "http://localhost:11500").rstrip("/")
     # OpenAI SDK expects base_url that already includes /v1
     return raw if raw.endswith("/v1") else f"{raw}/v1"
 

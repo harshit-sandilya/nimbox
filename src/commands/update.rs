@@ -2,9 +2,14 @@ use anyhow::Result;
 
 pub async fn run() -> Result<()> {
     let repo = "harshit-sandilya/nimbox";
-    let current = env!("CARGO_PKG_VERSION");
 
-    println!("Current version: v{}", current);
+    let current_tag = match option_env!("NIMBOX_BUILD_VERSION") {
+        Some(v) if v.starts_with('v') => v.to_string(),
+        Some(v) => format!("v{}", v),
+        None => format!("v{}", env!("CARGO_PKG_VERSION")),
+    };
+
+    println!("Current version: {}", current_tag);
     print!("Checking latest release...");
 
     let client = reqwest::Client::builder()
@@ -27,7 +32,7 @@ pub async fn run() -> Result<()> {
 
     println!(" latest: {}", latest);
 
-    if latest == format!("v{}", current) {
+    if latest == current_tag {
         println!("Already up to date.");
         return Ok(());
     }
